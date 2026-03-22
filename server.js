@@ -19,13 +19,26 @@ const path       = require('path');
 const { google } = require('googleapis');
 
 const app  = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // ── Middleware ─────────────────────────────────────────────────────────
 app.use(express.json({ limit: '100mb' }));
 
 // ── In-memory job store ────────────────────────────────────────────────
 const JOBS = new Map();
+
+// ── Helper: download a URL and return base64 string (Node 18+ fetch) ───
+async function urlToBase64(url) {
+  if (!url) return null;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${url}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    return buf.toString('base64');
+  } catch (e) {
+    throw new Error(`urlToBase64 failed for ${url}: ${e.message}`);
+  }
+}
 
 // ── Auth middleware ────────────────────────────────────────────────────
 function auth(req, res, next) {
@@ -55,7 +68,11 @@ app.get('/health', (req, res) => {
 // ─────────────────────────────────────────────────────────────────────
 app.post('/assemble', auth, async (req, res) => {
   const {
-    idea_id, short_audio_b64, long_audio_b64, image_b64,
+    idea_id,
+    // Accept base64 strings OR remote URLs — server downloads URLs automatically
+    short_audio_b64, short_audio_url,
+    long_audio_b64,  long_audio_url,
+    image_b64,       image_url,
     topic_category, short_script, long_script,
     short_title, long_title
   } = req.body;
@@ -73,23 +90,29 @@ app.post('/assemble', auth, async (req, res) => {
     const workDir = path.join('/tmp', String(idea_id));
     await fsp.mkdir(workDir, { recursive: true });
 
+    // ── Resolve base64 from inline data OR remote URL ───────────────
+    console.log(`[${idea_id}] Resolving assets...`);
+    const resolvedShortAudio = short_audio_b64 || await urlToBase64(short_audio_url);
+    const resolvedLongAudio  = long_audio_b64  || await urlToBase64(long_audio_url);
+    const resolvedImage      = image_b64       || await urlToBase64(image_url);
+
     // ── Save audio + image files ────────────────────────────────────
-    if (short_audio_b64) {
+    if (resolvedShortAudio) {
       await fsp.writeFile(
         path.join(workDir, 'short_audio.wav'),
-        Buffer.from(short_audio_b64, 'base64')
+        Buffer.from(resolvedShortAudio, 'base64')
       );
     }
-    if (long_audio_b64) {
+    if (resolvedLongAudio) {
       await fsp.writeFile(
         path.join(workDir, 'long_audio.wav'),
-        Buffer.from(long_audio_b64, 'base64')
+        Buffer.from(resolvedLongAudio, 'base64')
       );
     }
-    if (image_b64) {
+    if (resolvedImage) {
       await fsp.writeFile(
         path.join(workDir, 'thumbnail.jpg'),
-        Buffer.from(image_b64, 'base64')
+        Buffer.from(resolvedImage, 'base64')
       );
     }
 
