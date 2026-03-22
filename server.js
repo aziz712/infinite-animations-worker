@@ -60,6 +60,22 @@ async function generateTTS(text, outputPath) {
   });
 }
 
+// ── Helper: generate a colored gradient thumbnail via FFmpeg (no external API) ──
+async function generatePlaceholderImage(outputPath, category) {
+  const colors = {
+    Horror:  '0x1a0505', Comedy:  '0xff6b35',
+    Science: '0x003566', ASMR:    '0x2d6a4f',
+    Weird:   '0x7b2d8b'
+  };
+  const hex = colors[category] || '0x0d1b2a';
+  const cmd = `ffmpeg -y -f lavfi -i color=c=${hex}:size=1280x720:duration=1 -vframes 1 "${outputPath}"`;
+  return new Promise((resolve, reject) => {
+    exec(cmd, { timeout: 15000 }, (err) =>
+      err ? reject(new Error('Placeholder image failed: ' + err.message)) : resolve()
+    );
+  });
+}
+
 // ── Auth middleware ────────────────────────────────────────────────────
 function auth(req, res, next) {
   const key = req.headers['x-api-key'];
@@ -163,15 +179,27 @@ app.post('/assemble', auth, async (req, res) => {
       await fsp.writeFile(imagePath, Buffer.from(image_b64, 'base64'));
       console.log(`[${idea_id}] Image: from base64`);
     } else if (image_url) {
-      try {
-        const b64 = await urlToBase64(image_url);
-        await fsp.writeFile(imagePath, Buffer.from(b64, 'base64'));
-        console.log(`[${idea_id}] Image: from URL`);
-      } catch (e) {
-        throw new Error(`Image download failed: ${e.message}`);
+      // Retry up to 3 times (Pollinations can return intermittent 500s)
+      let downloaded = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const b64 = await urlToBase64(image_url);
+          await fsp.writeFile(imagePath, Buffer.from(b64, 'base64'));
+          console.log(`[${idea_id}] Image: from URL (attempt ${attempt})`);
+          downloaded = true;
+          break;
+        } catch (e) {
+          console.warn(`[${idea_id}] Image URL attempt ${attempt}/3 failed: ${e.message}`);
+          if (attempt < 3) await new Promise(r => setTimeout(r, 4000));
+        }
+      }
+      if (!downloaded) {
+        console.warn(`[${idea_id}] Image URL failed, using FFmpeg placeholder`);
+        await generatePlaceholderImage(imagePath, topic_category);
       }
     } else {
-      throw new Error('No image provided (no b64 or url)');
+      console.log(`[${idea_id}] No image URL, using FFmpeg placeholder`);
+      await generatePlaceholderImage(imagePath, topic_category);
     }
 
     // ── Get audio durations ─────────────────────────────────────────
