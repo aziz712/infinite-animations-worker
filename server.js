@@ -40,6 +40,26 @@ async function urlToBase64(url) {
   }
 }
 
+// ── Helper: generate TTS audio locally via espeak-ng (no external API) ──
+async function generateTTS(text, outputPath) {
+  const safe = text
+    .replace(/"/g, "'")
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[^\x20-\x7E]/g, '')
+    .substring(0, 500)
+    .trim();
+  return new Promise((resolve, reject) => {
+    exec(
+      `espeak-ng -v en-us -s 145 -p 50 -a 150 "${safe}" -w "${outputPath}"`,
+      { timeout: 30000 },
+      (err, stdout, stderr) => {
+        if (err) reject(new Error('espeak-ng failed: ' + (stderr || err.message)));
+        else resolve();
+      }
+    );
+  });
+}
+
 // ── Auth middleware ────────────────────────────────────────────────────
 function auth(req, res, next) {
   const key = req.headers['x-api-key'];
@@ -90,30 +110,68 @@ app.post('/assemble', auth, async (req, res) => {
     const workDir = path.join('/tmp', String(idea_id));
     await fsp.mkdir(workDir, { recursive: true });
 
-    // ── Resolve base64 from inline data OR remote URL ───────────────
+    // ── Resolve audio files: b64 > URL > local TTS from script ───────
     console.log(`[${idea_id}] Resolving assets...`);
-    const resolvedShortAudio = short_audio_b64 || await urlToBase64(short_audio_url);
-    const resolvedLongAudio  = long_audio_b64  || await urlToBase64(long_audio_url);
-    const resolvedImage      = image_b64       || await urlToBase64(image_url);
 
-    // ── Save audio + image files ────────────────────────────────────
-    if (resolvedShortAudio) {
-      await fsp.writeFile(
-        path.join(workDir, 'short_audio.wav'),
-        Buffer.from(resolvedShortAudio, 'base64')
-      );
+    // Short audio
+    const shortAudioPath = path.join(workDir, 'short_audio.wav');
+    if (short_audio_b64) {
+      await fsp.writeFile(shortAudioPath, Buffer.from(short_audio_b64, 'base64'));
+      console.log(`[${idea_id}] Short audio: from base64`);
+    } else if (short_audio_url) {
+      try {
+        const b64 = await urlToBase64(short_audio_url);
+        await fsp.writeFile(shortAudioPath, Buffer.from(b64, 'base64'));
+        console.log(`[${idea_id}] Short audio: from URL`);
+      } catch (e) {
+        console.warn(`[${idea_id}] Short audio URL failed (${e.message}), using local TTS`);
+        if (short_script) await generateTTS(short_script, shortAudioPath);
+        else throw new Error('No short audio source available (URL failed, no script)');
+      }
+    } else if (short_script) {
+      console.log(`[${idea_id}] Short audio: local TTS from script`);
+      await generateTTS(short_script, shortAudioPath);
+    } else {
+      throw new Error('No short audio provided (no b64, url, or script)');
     }
-    if (resolvedLongAudio) {
-      await fsp.writeFile(
-        path.join(workDir, 'long_audio.wav'),
-        Buffer.from(resolvedLongAudio, 'base64')
-      );
+
+    // Long audio
+    const longAudioPath = path.join(workDir, 'long_audio.wav');
+    if (long_audio_b64) {
+      await fsp.writeFile(longAudioPath, Buffer.from(long_audio_b64, 'base64'));
+      console.log(`[${idea_id}] Long audio: from base64`);
+    } else if (long_audio_url) {
+      try {
+        const b64 = await urlToBase64(long_audio_url);
+        await fsp.writeFile(longAudioPath, Buffer.from(b64, 'base64'));
+        console.log(`[${idea_id}] Long audio: from URL`);
+      } catch (e) {
+        console.warn(`[${idea_id}] Long audio URL failed (${e.message}), using local TTS`);
+        if (long_script) await generateTTS(long_script, longAudioPath);
+        else throw new Error('No long audio source available (URL failed, no script)');
+      }
+    } else if (long_script) {
+      console.log(`[${idea_id}] Long audio: local TTS from script`);
+      await generateTTS(long_script, longAudioPath);
+    } else {
+      throw new Error('No long audio provided (no b64, url, or script)');
     }
-    if (resolvedImage) {
-      await fsp.writeFile(
-        path.join(workDir, 'thumbnail.jpg'),
-        Buffer.from(resolvedImage, 'base64')
-      );
+
+    // Image
+    const imagePath = path.join(workDir, 'thumbnail.jpg');
+    if (image_b64) {
+      await fsp.writeFile(imagePath, Buffer.from(image_b64, 'base64'));
+      console.log(`[${idea_id}] Image: from base64`);
+    } else if (image_url) {
+      try {
+        const b64 = await urlToBase64(image_url);
+        await fsp.writeFile(imagePath, Buffer.from(b64, 'base64'));
+        console.log(`[${idea_id}] Image: from URL`);
+      } catch (e) {
+        throw new Error(`Image download failed: ${e.message}`);
+      }
+    } else {
+      throw new Error('No image provided (no b64 or url)');
     }
 
     // ── Get audio durations ─────────────────────────────────────────

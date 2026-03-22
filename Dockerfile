@@ -2,7 +2,7 @@ FROM node:20-slim
 
 # Install ffmpeg + ffprobe (required for video assembly)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get install -y --no-install-recommends ffmpeg espeak-ng && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
