@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: infinite-animations-worker
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: SESSION_SECRET
+        sync: false
+      - key: YOUTUBE_CLIENT_ID
+        sync: false
+      - key: YOUTUBE_CLIENT_SECRET
+        sync: false
+      - key: YOUTUBE_REFRESH_TOKEN
+        sync: false
