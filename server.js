@@ -14,10 +14,16 @@
 const express    = require('express');
 const { exec }   = require('child_process');
 const fs         = require('fs');
-const fsp        = require('fs').promises;
+const fsp        = require('fs/promises');
 const path       = require('path');
 const { google } = require('googleapis');
+const Replicate  = require('replicate');
 
+require('dotenv').config();
+
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
+});
 const app  = express();
 const PORT = process.env.PORT || 8080;
 
@@ -76,6 +82,30 @@ async function generatePlaceholderImage(outputPath, category) {
   });
 }
 
+// ── Helper: generate a background video via Replicate (Minimax) ──────
+async function generateBackgroundVideo(prompt, outputPath) {
+  if (!process.env.REPLICATE_API_TOKEN) throw new Error('REPLICATE_API_TOKEN missing');
+  try {
+    console.log('Starting Minimax video generation...');
+    const output = await replicate.run("minimax/video-01", {
+      input: {
+        prompt: prompt + ', cinematic 4k, realistic motion, stunning high quality visuals'
+      }
+    });
+    // output is normally a URL or stream. Replicate lib handles buffers/streams.
+    // If it's a URL, download it:
+    const videoUrl = typeof output === 'string' ? output : (Array.isArray(output) ? output[0] : output.url());
+    console.log('Video generated:', videoUrl);
+    const resp = await fetch(videoUrl);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    await fsp.writeFile(outputPath, buf);
+    return true;
+  } catch (e) {
+    console.error('Minimax generation failed:', e.message);
+    return false;
+  }
+}
+
 // ── Auth middleware ────────────────────────────────────────────────────
 function auth(req, res, next) {
   const key = req.headers['x-api-key'];
@@ -109,12 +139,16 @@ app.post('/assemble', auth, async (req, res) => {
     short_audio_b64, short_audio_url,
     long_audio_b64,  long_audio_url,
     image_b64,       image_url,
+    animation_prompt,
     topic_category, short_script, long_script,
     short_title, long_title
   } = req.body;
 
+  console.log('[API] /assemble request for idea_id:', idea_id);
+
   if (!idea_id) {
-    return res.status(400).json({ error: 'idea_id is required' });
+    console.error('[API] /assemble FAILED: Missing idea_id in body:', req.body);
+    return res.status(400).json({ error: 'idea_id is required', received: req.body });
   }
 
   // Respond immediately — assembly runs in background
@@ -212,9 +246,17 @@ app.post('/assemble', auth, async (req, res) => {
     await generateSRT(short_script || '', shortDuration, path.join(workDir, 'short_subs.srt'));
     await generateSRT(long_script  || '', longDuration,  path.join(workDir, 'long_subs.srt'));
 
-    // ── Assemble SHORT video (1080×1920 vertical for Shorts) ────────
+    // ── Generate Background Video (Optional high-quality) ───────────
+    const backgroundVideoPath = path.join(workDir, 'bg_video.mp4');
+    let hasBgVideo = false;
+    if (animation_prompt && process.env.REPLICATE_API_TOKEN) {
+      hasBgVideo = await generateBackgroundVideo(animation_prompt, backgroundVideoPath);
+    }
+
+    // ── Assemble SHORT video ────────────────────────────────────────
     const shortOut = path.join(workDir, 'short_video.mp4');
     await runFFmpeg(buildFFmpegCmd({
+      video:    hasBgVideo ? backgroundVideoPath : null,
       image:    path.join(workDir, 'thumbnail.jpg'),
       audio:    path.join(workDir, 'short_audio.wav'),
       subs:     path.join(workDir, 'short_subs.srt'),
@@ -223,11 +265,11 @@ app.post('/assemble', auth, async (req, res) => {
       format:   'short',
       category: topic_category || 'Science'
     }));
-    console.log(`[${idea_id}] Short video assembled`);
 
-    // ── Assemble LONG video (1920×1080 landscape) ───────────────────
+    // ── Assemble LONG video ────────────────────────────────────────
     const longOut = path.join(workDir, 'long_video.mp4');
     await runFFmpeg(buildFFmpegCmd({
+      video:    hasBgVideo ? backgroundVideoPath : null,
       image:    path.join(workDir, 'thumbnail.jpg'),
       audio:    path.join(workDir, 'long_audio.wav'),
       subs:     path.join(workDir, 'long_subs.srt'),
